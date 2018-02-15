@@ -15,6 +15,7 @@
             [status-im.ui.screens.navigation :as navigation]
             [status-im.utils.async :as utils.async]
             [status-im.utils.handlers :as handlers]
+            [status-im.ui.components.styles :as components.styles]
             status-im.chat.events.commands
             status-im.chat.events.requests
             status-im.chat.events.send-message
@@ -318,6 +319,79 @@
                                    contact-id
                                    navigation-replace?)))))))
 
+(handlers/register-handler-fx
+  :create-new-public-chat
+  [(re-frame/inject-cofx :now)]
+  (fn [{:keys [db now]} [_ topic]]
+    (let [exists? (boolean (get-in db [:chats topic]))
+          chat    {:chat-id    topic
+                   :name       topic
+                   :color      components.styles/default-chat-color
+                   :group-chat true
+                   :public?    true
+                   :is-active  true
+                   :timestamp  now}]
+      (merge
+        (when-not exists?
+          {:db                    (assoc-in db [:chats (:chat-id chat)] chat)
+           :save-chat             chat
+           :start-watching-group! {:group-id topic
+                                   :web3     (:web3 db)
+                                   :identity (:current-public-key db)}})
+        {:dispatch-n [[:navigate-to-clean :home]
+                      [:navigate-to-chat topic]]}))))
+
+(handlers/register-handler-fx
+  :create-new-group-chat-and-open
+  [re-frame/trim-v
+   (re-frame/inject-cofx :now)
+   (re-frame/inject-cofx :random-id)
+   (re-frame/inject-cofx :get-new-keypair!)]
+  (fn [{:keys [db random-id] :as cofx} [group-name]]
+    (let [{:keys [web3 current-public-key]} db
+          new-chat   (models/prepare-group-chat cofx group-name)
+          identities (mapv :identity contacts)
+          {:keys [chat-id public-key private-key contacts name]} new-chat]
+      {:db                    (-> db
+                                  (assoc-in [:chats chat-id] new-chat)
+                                  (assoc :group/selected-contacts #{}))
+       :save-chat             new-chat
+       :start-watching-group! {:web3     web3
+                               :group-id chat-id
+                               :identity current-public-key
+                               :keypair  {:public  public-key
+                                          :private private-key}
+                               :callback #(re-frame/dispatch [:incoming-message %1 %2])}
+       :invite-to-group!      {:web3       web3
+                               :group      {:id       chat-id
+                                            :name     name
+                                            :contacts (conj identities current-public-key)
+                                            :admin    current-public-key
+                                            :keypair  {:public  public-key
+                                                       :private private-key}}
+                               :identities identities
+                               :message    {:from       current-public-key
+                                            :message-id random-id}}
+       :dispatch-n            [[:navigate-to-clean :home]
+                               [:navigate-to-chat chat-id]]})))
+
+(handlers/register-handler-fx
+  :leave-group-chat
+  [(re-frame/inject-cofx :random-id)]
+  (fn [{{:keys [web3 current-chat-id chats current-public-key]} :db random-id :random-id :as cofx}]
+    (let [{:keys [public-key private-key public?]} (get chats current-chat-id)]
+      (merge (models/remove-chat cofx current-chat-id)
+             {:stop-watching-group! {:web3     web3
+                                     :group-id current-chat-id}
+              :dispatch             [:navigation-replace :home]}
+             (when-not public?
+               {:leave-group-chat! {:web3     web3
+                                    :group-id current-chat-id
+                                    :keypair  {:public  public-key
+                                               :private private-key}
+                                    :message  {:from       current-public-key
+                                               :message-id random-id}}})))))
+
 ;; TODO(janherich): remove this unnecessary event in the future (only model function `update-chat` will stay)
 (handlers/register-handler-fx
   :update-chat!
@@ -328,18 +402,8 @@
 (handlers/register-handler-fx
   :remove-chat
   [re-frame/trim-v]
-  (fn [{:keys [db]} [chat-id]]
-    (let [{:keys [chat-id group-chat debug?]} (get-in db [:chats chat-id])]
-      (cond-> {:db                      (-> db
-                                            (update :chats dissoc chat-id)
-                                            (update :deleted-chats (fnil conj #{}) chat-id))
-               :delete-pending-messages chat-id}
-        (or group-chat debug?)
-        (assoc :delete-messages chat-id)
-        debug?
-        (assoc :delete-chat chat-id)
-        (not debug?)
-        (assoc :deactivate-chat chat-id)))))
+  (fn [cofx [chat-id]]
+    (models/remove-chat cofx chat-id)))
 
 (handlers/register-handler-fx
   :delete-chat

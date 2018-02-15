@@ -1,6 +1,6 @@
 (ns status-im.ui.screens.navigation
   (:require [re-frame.core :as re-frame]
-            [status-im.utils.handlers :refer [register-handler-db]]
+            [status-im.utils.handlers :as handlers :refer [register-handler-db]]
             [status-im.constants :refer [console-chat-id]]))
 
 ;; private helper fns
@@ -55,31 +55,31 @@
 
 ;; event handlers
 
-(register-handler-db
+(handlers/register-handler-db
   :navigate-forget
   (re-frame/enrich preload-data!)
   (fn [db [_ new-view-id]]
     (assoc db :view-id new-view-id)))
 
-(register-handler-db
+(handlers/register-handler-db
   :navigate-to
   (re-frame/enrich preload-data!)
   (fn [db [_ & params]]
     (apply navigate-to db params)))
 
-(register-handler-db
+(handlers/register-handler-db
   :navigate-to-modal
   (re-frame/enrich preload-data!)
   (fn [db [_ modal-view]]
     (assoc db :modal modal-view)))
 
-(register-handler-db
+(handlers/register-handler-db
   :navigation-replace
   (re-frame/enrich preload-data!)
   (fn [db [_ view-id]]
     (replace-view db view-id)))
 
-(register-handler-db
+(handlers/register-handler-db
   :navigate-back
   (re-frame/enrich -preload-data!)
   (fn [{:keys [navigation-stack view-id modal] :as db} _]
@@ -99,12 +99,12 @@
             (assoc db :view-id first-in-stack)))
         db))))
 
-(register-handler-db
+(handlers/register-handler-db
   :navigate-to-clean
   (fn [db [_ view-id]]
     (navigate-to-clean db view-id)))
 
-(register-handler-db
+(handlers/register-handler-db
   :navigate-to-tab
   (re-frame/enrich preload-data!)
   (fn [db [_ view-id]]
@@ -112,3 +112,10 @@
         (assoc :prev-tab-view-id (:view-id db))
         (assoc :prev-view-id (:view-id db))
         (navigate-to-clean view-id))))
+
+(handlers/register-handler-fx
+  :show-profile
+  [re-frame/trim-v]
+  (fn [{db :db} [identity]]
+    {:db       (assoc db :contacts/identity identity)
+     :dispatch [:navigate-forget :profile]}))
