@@ -28,7 +28,7 @@
             [status-im.native-module.core :as status]
             [status-im.ui.components.react :as react]
             [status-im.ui.components.permissions :as permissions]
-            [status-im.constants :refer [console-chat-id]]
+            [status-im.constants :refer [console-chat-id] :as constants]
             [status-im.data-store.core :as data-store]
             [status-im.i18n :as i18n]
             [status-im.js-dependencies :as dependencies]
@@ -43,7 +43,8 @@
             [status-im.utils.platform :as platform]
             [status-im.utils.types :as types]
             [status-im.utils.utils :as utils]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [status-im.utils.datetime :as datetime]))
 
 ;;;; Helper fns
 
@@ -70,6 +71,11 @@
  :now
  (fn [coeffects _]
    (assoc coeffects :now (time/now-ms))))
+
+(re-frame/reg-cofx
+ :now-s
+ (fn [coeffects _]
+   (assoc coeffects :now-s (time/now-s!))))
 
 (re-frame/reg-cofx
  :random-id
@@ -394,10 +400,31 @@
     (when after-stop {:dispatch-n [after-stop]})))
 
 (handlers/register-handler-fx
-  :app-state-change
-  (fn [_ [_ state]]))
-;; TODO(rasom): let's not remove this handler, it will be used for
-;; pausing node on entering background on android
+ :app-state-change
+ [(re-frame.core/inject-cofx :now-s)]
+ (fn [{:keys [db now-s]} [_ new-state-str]]
+   (let [{:app-state/keys [state background-timestamp]} db
+         diff-seconds (if background-timestamp (- now-s background-timestamp) 0)
+         from         (datetime/minute-before background-timestamp)
+         web3         (:web3 db)
+         new-state    (keyword new-state-str)]
+     (log/debug "App state change"
+                {:from state :to new-state
+                 :diff diff-seconds :from} from)
+     (cond->
+      {:db (cond-> (assoc db :app-state/state new-state)
+
+                   (= :active new-state)
+                   (assoc :app-state/active-timestamp now-s)
+
+                   (= :background new-state)
+                   (assoc :app-state/background-timestamp now-s))}
+
+      (and (= :active new-state) (> diff-seconds constants/history-requesting-threshold-seconds))
+      (merge {:check-network-connection
+              (fn [connected?]
+                (when connected?
+                 (re-frame/dispatch [:initialize-offline-inbox web3 from now-s])))})))))
 
 (handlers/register-handler-fx
   :request-permissions

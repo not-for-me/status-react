@@ -2,7 +2,10 @@
   (:require [re-frame.core :as re-frame]
             [status-im.utils.handlers :as handlers]
             [status-im.network.net-info :as net-info]
-            [status-im.native-module.core :as status]))
+            [status-im.native-module.core :as status]
+            [taoensso.timbre :as log]
+            [status-im.constants :as constants]
+            [status-im.utils.datetime :as datetime]))
 
 (re-frame/reg-fx
   ::listen-to-network-status
@@ -17,17 +20,56 @@
   (fn [data]
     (status/connection-change data)))
 
+(re-frame/reg-fx
+  :check-network-connection
+  (fn [callback]
+    (net-info/is-connected? callback)))
+
 (handlers/register-handler-fx
  :listen-to-network-status
  (fn []
    {::listen-to-network-status [#(re-frame/dispatch [::update-connection-status %])
                                 #(re-frame/dispatch [::update-network-status %])]}))
 
-(handlers/register-handler-db
+(handlers/register-handler-fx
  ::update-connection-status
- [re-frame/trim-v]
- (fn [db [is-connected?]]
-   (assoc db :network-status (if is-connected? :online :offline))))
+ [re-frame/trim-v (re-frame/inject-cofx :now-s)]
+ (fn [{:keys [db now-s]} [is-connected?]]
+   (let [{:network-status/keys [offline-timestamp]
+          :app-state/keys      [state active-timestamp background-timestamp]
+          :keys                [web3]} db
+         off-on-time-diff (if offline-timestamp (- now-s offline-timestamp) 0)]
+     (log/debug "Update connection status"
+                {:is-connected                            is-connected?
+                 :off-on-time-diff                        off-on-time-diff
+                 :state                                   state
+                 :offline-timestamp                       offline-timestamp
+                 "(> active-timestamp offline-timestamp)" (> active-timestamp offline-timestamp)})
+     (cond->
+      {:db (cond-> (assoc db :network-status (if is-connected? :online :offline))
+
+                   (not is-connected?)
+                   (assoc :network-status/offline-timestamp now-s)
+
+                   is-connected?
+                   (dissoc :network-status/offline-timestamp))}
+
+      (and is-connected?
+           (= state :active)
+           (> off-on-time-diff constants/history-requesting-threshold-seconds))
+      (merge (let [from (datetime/minute-before offline-timestamp)]
+               {:dispatch [:initialize-offline-inbox web3 from now-s]}))
+
+      (and is-connected?
+           (= state :active)
+           offline-timestamp
+           ;; transition to :active app state happened after :offline network state
+           ;; which means that on entering foreground we were not able to load
+           ;; history as device was offline
+           (> active-timestamp offline-timestamp)
+           (> (- now-s background-timestamp) constants/history-requesting-threshold-seconds))
+      (merge (let [from (datetime/minute-before background-timestamp)]
+               {:dispatch [:initialize-offline-inbox web3 from now-s]}))))))
 
 (handlers/register-handler-fx
  ::update-network-status
