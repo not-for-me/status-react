@@ -81,14 +81,17 @@
     [react/view styles/share-contact-icon-container
      [vector-icons/icon :icons/qr {:color colors/blue}]]]])
 
-
+(defn- on-notifications []
+  (if platform/ios?
+    (.openURL react/linking "app-settings://notification/status-im")
+    (.openURL react/linking "app-settings://notification/status-im")))
 
 (defn my-profile-settings [{:keys [network networks]}]
   [react/view
    [profile.components/settings-title (i18n/label :t/settings)]
    [profile.components/settings-item :t/main-currency "USD" #() false]
    [profile.components/settings-item-separator]
-   [profile.components/settings-item :t/notifications "" #() true]
+   [profile.components/settings-item :t/notifications "" on-notifications true]
    [profile.components/settings-item-separator]
    [profile.components/settings-item :t/network (get-in networks [network :name])
     #(re-frame/dispatch [:navigate-to :network-settings]) true]
