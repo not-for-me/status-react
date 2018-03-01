@@ -4,7 +4,7 @@
             [status-im.chat.events.console :as console-events]
             [status-im.chat.events.requests :as requests-events]
             [status-im.chat.models :as chat-model]
-            [status-im.chat.models.commands :as commands-model] 
+            [status-im.chat.models.commands :as commands-model]
             [status-im.utils.clocks :as clocks-utils]))
 
 (defn- get-current-account
@@ -25,7 +25,7 @@
     (:ref (get available-commands-responses response-name))))
 
 (defn add-message-to-db
-  [db chat-id {:keys [message-id clock-value] :as message} current-chat?]
+  [db chat-id {:keys [message-id from-clock-value to-clock-value] :as message} current-chat?]
   (let [prepared-message (cond-> (assoc message
                                         :chat-id    chat-id
                                         :appearing? true)
@@ -33,43 +33,44 @@
                            (assoc :appearing? false))]
     (cond-> (-> db
                 (update-in [:chats chat-id :messages] assoc message-id prepared-message)
-                (update-in [:chats chat-id :last-clock-value] (fnil max 0) clock-value))
+                (assoc-in [:chats chat-id :last-from-clock-value] from-clock-value)
+                (assoc-in [:chats chat-id :last-to-clock-value] to-clock-value))
       (not current-chat?)
       (update-in [:chats chat-id :unviewed-messages] (fnil conj #{}) message-id))))
 
 (defn receive
   [{:keys [db now] :as cofx}
-   {:keys [from group-id chat-id content-type content message-id timestamp clock-value]
+   {:keys [from group-id chat-id content-type content message-id timestamp from-clock-value to-clock-value]
     :as   message}]
   (let [{:keys [current-chat-id view-id
                 access-scope->commands-responses] :contacts/keys [contacts]} db
         {:keys [public-key] :as current-account} (get-current-account db)
-        chat-identifier (or group-id chat-id from)
-        current-chat?    (and (= :chat view-id)
-                              (= current-chat-id chat-identifier))
-        fx               (if (get-in db [:chats chat-identifier])
-                           (chat-model/upsert-chat cofx {:chat-id chat-identifier
-                                                         :group-chat (boolean group-id)})
-                           (chat-model/add-chat cofx chat-identifier))
-        chat             (get-in fx [:db :chats chat-identifier])
-        command-request? (= content-type constants/content-type-command-request)
-        command          (:command content)
-        enriched-message (cond-> (assoc message
-                                        :chat-id     chat-identifier
-                                        :timestamp   (or timestamp now)
-                                        :show?       true
-                                        :clock-value (clocks-utils/receive
-                                                      clock-value
-                                                      (:last-clock-value chat)))
-                           public-key
-                           (assoc :user-statuses {public-key (if current-chat? :seen :received)})
-                           (and command command-request?)
-                           (assoc-in [:content :content-command-ref]
-                                     (lookup-response-ref access-scope->commands-responses
-                                                          current-account
-                                                          (get-in fx [:db :chats chat-identifier])
-                                                          contacts
-                                                          command)))]
+        chat-identifier               (or group-id chat-id from)
+        current-chat?                 (and (= :chat view-id)
+                                           (= current-chat-id chat-identifier))
+        fx                            (if (get-in db [:chats chat-identifier])
+                                        (chat-model/upsert-chat cofx {:chat-id chat-identifier
+                                                                      :group-chat (boolean group-id)})
+                                        (chat-model/add-chat cofx chat-identifier))
+        {:keys [last-from-clock-value
+                last-to-clock-value]} (get-in fx [:db :chats chat-identifier])
+        command-request?              (= content-type constants/content-type-command-request)
+        command                       (:command content)
+        enriched-message              (cond-> (assoc message
+                                                     :chat-id          chat-identifier
+                                                     :timestamp        (or timestamp now)
+                                                     :show?            true
+                                                     :to-clock-value   last-to-clock-value
+                                                     :from-clock-value (or to-clock-value (inc last-from-clock-value)))
+                                        public-key
+                                        (assoc :user-statuses {public-key (if current-chat? :seen :received)})
+                                        (and command command-request?)
+                                        (assoc-in [:content :content-command-ref]
+                                                  (lookup-response-ref access-scope->commands-responses
+                                                                       current-account
+                                                                       (get-in fx [:db :chats chat-identifier])
+                                                                       contacts
+                                                                       command)))]
     (cond-> (-> fx
                 (update :db add-message-to-db chat-identifier enriched-message current-chat?)
                 (assoc :save-message (dissoc enriched-message :new?)))
@@ -138,9 +139,9 @@
                                          :from current-account-id}}})))
 
 (defn- generate-message
-  [{:keys [network-status]} chat-id message] 
+  [{:keys [network-status]} chat-id message]
   (assoc (select-keys message [:from :message-id])
-         :payload (cond-> (select-keys message [:content :content-type :clock-value :timestamp :show?])
+         :payload (cond-> (select-keys message [:content :content-type :to-clock-value :timestamp :show?])
                     (= :offline network-status)
                     (assoc :show? false))))
 
@@ -158,14 +159,17 @@
         (cond
           (and group-chat (not public?))
           (let [{:keys [public-key private-key]} (get chats chat-id)]
-            {:send-group-message (assoc options
-                                        :group-id chat-id
-                                        :keypair {:public  public-key
-                                                  :private private-key})})
+            {:send-group-message (-> options
+                                     (update-in [:message :payload] dissoc :to-clock-value)
+                                     (assoc :group-id chat-id
+                                            :keypair {:public  public-key
+                                                      :private private-key}))})
 
           (and group-chat public?)
-          {:send-public-group-message (assoc options :group-id chat-id
-                                             :username (get-in accounts [current-account-id :name]))}
+          {:send-public-group-message (-> options
+                                          (update-in [:message :payload] dissoc :to-clock-value)
+                                          (assoc :group-id chat-id
+                                                 :username (get-in accounts [current-account-id :name])))}
 
           :else
           (merge {:send-message (assoc-in options [:message :to] chat-id)}
@@ -175,16 +179,17 @@
 
 (defn- prepare-message [params chat now random-id]
   (let [{:keys [chat-id identity message-text]} params
-        {:keys [group-chat public? last-clock-value]} chat
-        message {:message-id   random-id
-                 :chat-id      chat-id
-                 :content      message-text
-                 :from         identity
-                 :content-type constants/text-content-type
-                 :outgoing     true
-                 :timestamp    now
-                 :clock-value  (clocks-utils/send last-clock-value)
-                 :show?        true}]
+        {:keys [group-chat public? last-from-clock-value last-to-clock-value]} chat
+        message {:message-id       random-id
+                 :chat-id          chat-id
+                 :content          message-text
+                 :from             identity
+                 :content-type     constants/text-content-type
+                 :outgoing         true
+                 :timestamp        now
+                 :from-clock-value last-from-clock-value
+                 :to-clock-value   (inc last-to-clock-value)
+                 :show?            true}]
     (cond-> message
       (not group-chat)
       (assoc :message-type :user-message
@@ -208,7 +213,7 @@
     (merge fx (send cofx params'))))
 
 (defn- prepare-command
-  [identity chat-id now clock-value
+  [identity chat-id now last-from-clock-value last-to-clock-value
    {request-params  :params
     request-command :command
     :keys           [prefill prefillBotDb]
@@ -231,21 +236,22 @@
                         :short-preview (:short-preview command)
                         :bot (or (:bot command)
                                  (:owner-id command)))]
-    {:message-id   id
-     :from         identity
-     :to           chat-id
-     :timestamp    now
-     :content      content'
-     :content-type (or content-type
-                       (if request
-                         constants/content-type-command-request
-                         constants/content-type-command))
-     :outgoing     true
-     :to-message   to-message
-     :type         (:type command)
-     :has-handler  (:has-handler command)
-     :clock-value  (clocks-utils/send clock-value)
-     :show?        true}))
+    {:message-id       id
+     :from             identity
+     :to               chat-id
+     :timestamp        now
+     :content          content'
+     :content-type     (or content-type
+                           (if request
+                             constants/content-type-command-request
+                             constants/content-type-command))
+     :outgoing         true
+     :to-message       to-message
+     :type             (:type command)
+     :has-handler      (:has-handler command)
+     :to-clock-value   (inc last-to-clock-value)
+     :from-clock-value last-from-clock-value
+     :show?            true}))
 
 (defn send-command
   [{{:keys [current-public-key chats] :as db} :db :keys [now random-id-seq] :as cofx} add-to-chat-id params]
@@ -254,11 +260,12 @@
           :as   content} :command
          chat-id         :chat-id} params
         request          (:request handler-data)
-        last-clock-value (get-in chats [chat-id :last-clock-value])
+        {:keys [last-to-clock-value
+                last-from-clock-value]} (get chats chat-id)
         hidden-params    (->> (:params command)
                               (filter :hidden)
                               (map :name))
-        command'         (prepare-command current-public-key chat-id now last-clock-value request content)
+        command'         (prepare-command current-public-key chat-id now last-to-clock-value last-from-clock-value request content)
         params'          (assoc params :command command')
         fx               (-> (chat-model/upsert-chat cofx {:chat-id chat-id})
                              (update :db add-message-to-db chat-id command' true)
