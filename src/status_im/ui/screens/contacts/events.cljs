@@ -39,25 +39,7 @@
 
 ;;;; FX
 
-(reg-fx
-  ::watch-contact
-  (fn [{:keys [web3 whisper-identity public-key private-key]}]
-    #_(protocol/watch-user! {:web3     web3
-                             :identity whisper-identity
-                             :keypair  {:public  public-key
-                                        :private private-key}
-                             :callback #(dispatch [:incoming-message %1 %2])})))
 
-(reg-fx
-  ::stop-watching-contact
-  (fn [{:keys [web3 whisper-identity]}]
-    #_(protocol/stop-watching-user! {:web3     web3
-                                     :identity whisper-identity})))
-
-(reg-fx
-  ::reset-pending-messages
-  (fn [from]
-    #_(protocol/reset-pending-messages! from)))
 
 (reg-fx
   :save-contact
@@ -81,20 +63,6 @@
        (s/join " ")))
 
 ;;;; Handlers
-
-(defn watch-contact
-  "Takes effects map, adds effects necessary to start watching contact"
-  [{:keys [db] :as fx} {:keys [public-key private-key] :as contact}]
-  (cond-> fx
-    (and public-key private-key)
-    (assoc ::watch-contact (merge
-                            (select-keys db [:web3])
-                            (select-keys contact [:whisper-identity :public-key :private-key])))))
-
-(register-handler-fx
-  :watch-contact
-  (fn [{:keys [db]} [_ contact]]
-    (watch-contact {:db db} contact)))
 
 (register-handler-fx
   :update-contact!
@@ -188,10 +156,6 @@
     (let [contacts-list (map #(vector (:whisper-identity %) %) all-contacts)
           contacts (into {} contacts-list)]
       {:db         (update db :contacts/contacts #(merge contacts %))})))
-;; TODO (yenda) this mapv was dispatching useless events, fixed but is it necessary if
-;; it was dispatching useless events before with nil
-;;:dispatch-n (mapv (fn [[_ contact]] [:watch-contact contact]) contacts)
-
 
 (register-handler-fx
   :add-contacts
