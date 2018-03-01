@@ -20,11 +20,6 @@
   (fn [data]
     (status/connection-change data)))
 
-(re-frame/reg-fx
-  :check-network-connection
-  (fn [callback]
-    (net-info/is-connected? callback)))
-
 (handlers/register-handler-fx
  :listen-to-network-status
  (fn []
@@ -38,7 +33,11 @@
    (let [{:network-status/keys [offline-timestamp]
           :app-state/keys      [state active-timestamp background-timestamp]
           :keys                [web3]} db
-         off-on-time-diff (if offline-timestamp (- now-s offline-timestamp) 0)]
+         from (if (and background-timestamp
+                       (< background-timestamp offline-timestamp active-timestamp))
+                background-timestamp
+                offline-timestamp)
+         off-on-time-diff (if from (- now-s from) 0)]
      (log/debug "Update connection status"
                 {:is-connected                            is-connected?
                  :off-on-time-diff                        off-on-time-diff
@@ -57,19 +56,8 @@
       (and is-connected?
            (= state :active)
            (> off-on-time-diff constants/history-requesting-threshold-seconds))
-      (merge (let [from (datetime/minute-before offline-timestamp)]
-               {:dispatch [:initialize-offline-inbox web3 from now-s]}))
-
-      (and is-connected?
-           (= state :active)
-           offline-timestamp
-           ;; transition to :active app state happened after :offline network state
-           ;; which means that on entering foreground we were not able to load
-           ;; history as device was offline
-           (> active-timestamp offline-timestamp)
-           (> (- now-s background-timestamp) constants/history-requesting-threshold-seconds))
-      (merge (let [from (datetime/minute-before background-timestamp)]
-               {:dispatch [:initialize-offline-inbox web3 from now-s]}))))))
+      (merge (let [from' (datetime/minute-before from)]
+               {:dispatch [:initialize-offline-inbox web3 from' now-s]}))))))
 
 (handlers/register-handler-fx
  ::update-network-status

@@ -403,14 +403,23 @@
  :app-state-change
  [(re-frame.core/inject-cofx :now-s)]
  (fn [{:keys [db now-s]} [_ new-state-str]]
-   (let [{:app-state/keys [state background-timestamp]} db
-         diff-seconds (if background-timestamp (- now-s background-timestamp) 0)
-         from         (datetime/minute-before background-timestamp)
+   (let [{:app-state/keys      [state background-timestamp]
+          :keys                [network-status]
+          :network-status/keys [offline-timestamp online-timestamp]} db
+         background-seconds (if background-timestamp (- now-s background-timestamp) 0)
+         from               (if (and offline-timestamp
+                                     (< offline-timestamp background-timestamp online-timestamp))
+                              offline-timestamp
+                              background-timestamp)
+         time-diff          (if from (- now-s from) 0)
+
          web3         (:web3 db)
          new-state    (keyword new-state-str)]
      (log/debug "App state change"
-                {:from state :to new-state
-                 :diff diff-seconds :from} from)
+                {:from-state state
+                 :to         new-state
+                 :diff       background-seconds
+                 :from       from})
      (cond->
       {:db (cond-> (assoc db :app-state/state new-state)
 
@@ -420,11 +429,12 @@
                    (= :background new-state)
                    (assoc :app-state/background-timestamp now-s))}
 
-      (and (= :active new-state) (> diff-seconds constants/history-requesting-threshold-seconds))
-      (merge {:check-network-connection
-              (fn [connected?]
-                (when connected?
-                 (re-frame/dispatch [:initialize-offline-inbox web3 from now-s])))})))))
+      (and (= :active new-state)
+           (= :online network-status)
+           (> time-diff constants/history-requesting-threshold-seconds))
+      (merge {:dispatch
+              (let [from' (datetime/minute-before from)]
+                [:initialize-offline-inbox web3 from' now-s])})))))
 
 (handlers/register-handler-fx
   :request-permissions
