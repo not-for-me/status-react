@@ -33,17 +33,19 @@
    (let [{:network-status/keys [offline-timestamp]
           :app-state/keys      [state active-timestamp background-timestamp]
           :keys                [web3]} db
-         from (if (and background-timestamp
-                       (< background-timestamp offline-timestamp active-timestamp))
-                background-timestamp
-                offline-timestamp)
-         off-on-time-diff (if from (- now-s from) 0)]
-     (log/debug "Update connection status"
-                {:is-connected                            is-connected?
-                 :off-on-time-diff                        off-on-time-diff
-                 :state                                   state
-                 :offline-timestamp                       offline-timestamp
-                 "(> active-timestamp offline-timestamp)" (> active-timestamp offline-timestamp)})
+         from      (if (and background-timestamp
+                            (< background-timestamp offline-timestamp active-timestamp))
+                     background-timestamp
+                     offline-timestamp)
+         time-diff (if from (- now-s from) 0)]
+     (log/info "Update connection status"
+               {:is-connected                            is-connected?
+                :off-on-time-diff                        time-diff
+                :app-state                               state
+                :offline-timestamp                       offline-timestamp
+                :background-timestamp                    background-timestamp
+                :active-timestamp                        active-timestamp
+                "(> active-timestamp offline-timestamp)" (> active-timestamp offline-timestamp)})
      (cond->
       {:db (cond-> (assoc db :network-status (if is-connected? :online :offline))
 
@@ -55,7 +57,7 @@
 
       (and is-connected?
            (= state :active)
-           (> off-on-time-diff constants/history-requesting-threshold-seconds))
+           (> time-diff constants/history-requesting-threshold-seconds))
       (merge (let [from' (datetime/minute-before from)]
                {:dispatch [:initialize-offline-inbox web3 from' now-s]}))))))
 

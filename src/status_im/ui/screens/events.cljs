@@ -415,11 +415,15 @@
 
          web3         (:web3 db)
          new-state    (keyword new-state-str)]
-     (log/debug "App state change"
-                {:from-state state
-                 :to         new-state
-                 :diff       background-seconds
-                 :from       from})
+     (log/info "App state change"
+               {:app-state            state
+                :new-app-state        new-state
+                :network-status       network-status
+                :time-diff            time-diff
+                :from                 from
+                :offline-timestamp    offline-timestamp
+                :background-timestamp background-timestamp
+                :online-timestamp     online-timestamp})
      (cond->
       {:db (cond-> (assoc db :app-state/state new-state)
 

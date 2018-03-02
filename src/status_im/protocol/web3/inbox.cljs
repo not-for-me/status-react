@@ -79,7 +79,7 @@
                      to
                      (assoc :to to))]
     (log/info "offline inbox: request-messages request")
-    (log/info "\n\noffline inbox: request-messages args" (pr-str opts) "\n\n")
+    (log/info "offline inbox: request-messages args" (pr-str opts))
     (.requestMessages (web3.utils/shh web3)
                       (clj->js opts)
                       (response-handler on-error on-success))))
